@@ -1,64 +1,168 @@
-import streamlit as st
 import requests
+import streamlit as st
 from datetime import datetime
 
-st.set_page_config(page_title="AirGuard AI", page_icon="🌫️", layout="wide")
+st.set_page_config(
+    page_title="Air Quality Monitor",
+    page_icon="🌫️",
+    layout="wide",
+)
 
-st.title("🌫️ AirGuard AI")
-st.subheader("Đo mức độ ô nhiễm không khí THỰC TẾ tại TP.HCM")
-st.caption("Dữ liệu từ trạm Lãnh sự quán Mỹ • Cập nhật mỗi giờ")
+# =========================
+# CONFIG
+# =========================
+BASE_URL = "https://api.waqi.info/feed/{}/"
+TOKEN = "19555aceabb14118cafec4e2a60d1342f7aa0ce3"
+DEFAULT_STATION = "ho-chi-minh-city"
 
-token = "19555aceabb14118cafec4e2a60d1342f7aa0ce3"
 
-if st.button("📡 Lấy dữ liệu thực tế ngay", type="primary", use_container_width=True):
-    with st.spinner("Đang kết nối trạm đo thực tế..."):
-        url = f"https://api.waqi.info/feed/@8767/?token={token}"
-        try:
-            response = requests.get(url, timeout=15)
-            data = response.json()
+# =========================
+# HELPERS
+# =========================
+def get_aqi_status(aqi: int):
+    if aqi <= 50:
+        return "Good", "Không khí tốt, an toàn cho hầu hết mọi người.", "🟢"
+    if aqi <= 100:
+        return "Moderate", "Chấp nhận được, nhưng người nhạy cảm nên chú ý.", "🟡"
+    if aqi <= 150:
+        return "Unhealthy for Sensitive Groups", "Trẻ em, người già, người có bệnh hô hấp nên hạn chế ra ngoài lâu.", "🟠"
+    if aqi <= 200:
+        return "Unhealthy", "Mọi người nên giảm hoạt động ngoài trời.", "🔴"
+    if aqi <= 300:
+        return "Very Unhealthy", "Không khí rất xấu, nên hạn chế ra ngoài nếu không cần thiết.", "🟣"
+    return "Hazardous", "Nguy hại cho sức khỏe, nên ở trong nhà và bảo vệ hô hấp.", "⚫"
 
-            if data["status"] == "ok":
-                # === FIX: Xử lý an toàn dữ liệu ===
-                aqi_raw = data["data"].get("aqi")
-                try:
-                    aqi = int(aqi_raw) if aqi_raw is not None else -1
-                except:
-                    aqi = -1
 
-                pm25_raw = data["data"].get("iaqi", {}).get("pm25", {}).get("v")
-                try:
-                    pm25 = float(pm25_raw) if pm25_raw is not None else None
-                except:
-                    pm25 = None
+def safe_iaqi_value(iaqi: dict, key: str):
+    try:
+        return iaqi.get(key, {}).get("v", "-")
+    except Exception:
+        return "-"
 
-                city = data["data"]["city"]["name"]
 
-                st.success(f"✅ Dữ liệu thực tế từ {city}")
+@st.cache_data(ttl=600)
+def fetch_air_quality(station: str):
+    response = requests.get(
+        BASE_URL.format(station),
+        params={"token": TOKEN},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("**AQI**", aqi if aqi > 0 else "N/A")
-                with col2:
-                    st.metric("**PM2.5**", f"{pm25} µg/m³" if pm25 is not None else "N/A")
-                with col3:
-                    st.metric("Cập nhật lúc", datetime.now().strftime("%H:%M %d/%m"))
+    if payload.get("status") != "ok":
+        raise ValueError(payload.get("data", "Không lấy được dữ liệu từ API"))
 
-                # Phân loại thông minh
-                if aqi <= 0:
-                    st.warning("⚠️ Dữ liệu tạm thời không khả dụng. Vui lòng thử lại sau vài phút.")
-                elif aqi <= 50:
-                    st.success("🟢 Tốt - Có thể ra ngoài bình thường")
-                elif aqi <= 100:
-                    st.warning("🟡 Trung bình - Nên đeo khẩu trang nếu nhạy cảm")
-                else:
-                    st.error("🔴 Không tốt - Hạn chế ra ngoài, đeo khẩu trang N95")
+    return payload.get("data", {})
 
-                st.info("💡 AirGuard AI khuyên: Nếu AQI > 100, nên ở trong nhà hoặc đeo khẩu trang khi di chuyển.")
 
-            else:
-                st.error("❌ API trả về lỗi. Vui lòng thử lại sau.")
-        except Exception as e:
-            st.error(f"❌ Không kết nối được: {str(e)}")
+# =========================
+# SIDEBAR
+# =========================
+with st.sidebar:
+    st.title("⚙️ Cài đặt")
+    station = st.text_input(
+        "Nhập station / địa điểm",
+        value=DEFAULT_STATION,
+        help="Ví dụ: ho-chi-minh-city, hanoi, beijing, here, @1251",
+    )
+
+    if st.button("🔄 Làm mới dữ liệu", use_container_width=True):
+        fetch_air_quality.clear()
+
+    st.markdown("---")
+    st.markdown("### Gợi ý station")
+    st.code("ho-chi-minh-city")
+    st.code("hanoi")
+    st.code("beijing")
+    st.code("here")
+
+
+# =========================
+# MAIN UI
+# =========================
+st.title("🌫️ Air Quality Monitor App")
+st.caption("Ứng dụng theo dõi chất lượng không khí bằng WAQI API")
+
+try:
+    data = fetch_air_quality(station.strip())
+
+    city = data.get("city", {})
+    city_name = city.get("name", "Unknown location") if isinstance(city, dict) else str(city)
+
+    aqi = data.get("aqi", 0)
+    try:
+        aqi = int(aqi)
+    except Exception:
+        aqi = 0
+
+    dominentpol = str(data.get("dominentpol", "N/A")).upper()
+    iaqi = data.get("iaqi", {}) if isinstance(data.get("iaqi"), dict) else {}
+    time_data = data.get("time", {}) if isinstance(data.get("time"), dict) else {}
+    updated_at = time_data.get("s", "N/A")
+    timezone = time_data.get("tz", "")
+
+    status_label, health_message, status_icon = get_aqi_status(aqi)
+
+    st.subheader(f"📍 {city_name}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("AQI", aqi)
+    col2.metric("Mức độ", f"{status_icon} {status_label}")
+    col3.metric("Chất ô nhiễm chính", dominentpol)
+    col4.metric("Cập nhật", updated_at)
+
+    st.info(health_message)
+
+    st.markdown("### Chỉ số chi tiết")
+    d1, d2, d3, d4, d5, d6 = st.columns(6)
+    d1.metric("PM2.5", safe_iaqi_value(iaqi, "pm25"))
+    d2.metric("PM10", safe_iaqi_value(iaqi, "pm10"))
+    d3.metric("CO", safe_iaqi_value(iaqi, "co"))
+    d4.metric("NO₂", safe_iaqi_value(iaqi, "no2"))
+    d5.metric("SO₂", safe_iaqi_value(iaqi, "so2"))
+    d6.metric("O₃", safe_iaqi_value(iaqi, "o3"))
+
+    st.markdown("### Thông tin bổ sung")
+    extra1, extra2 = st.columns(2)
+
+    with extra1:
+        st.write(f"**Thời gian cập nhật:** {updated_at}")
+        st.write(f"**Múi giờ:** {timezone or 'N/A'}")
+
+    with extra2:
+        forecast = data.get("forecast", {})
+        has_forecast = "Có" if forecast else "Không"
+        st.write(f"**Có dữ liệu dự báo:** {has_forecast}")
+        st.write(f"**Thời điểm xem app:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    with st.expander("Xem dữ liệu JSON thô"):
+        st.json(data)
+
+except requests.RequestException as e:
+    st.error(f"Lỗi kết nối API: {e}")
+except ValueError as e:
+    st.error(f"API trả về lỗi: {e}")
+except Exception as e:
+    st.error(f"Có lỗi xảy ra: {e}")
 
 st.markdown("---")
-st.caption("AirGuard AI • Thử thách AI Driven Innovation 2026")
+st.caption("Made with Streamlit + WAQI API")
+
+# =========================
+# requirements.txt
+# =========================
+# streamlit
+# requests
+
+# =========================
+# RUN LOCAL
+# =========================
+# streamlit run app.py
+
+# =========================
+# IMPORTANT
+# =========================
+# Code này chạy được ngay, nhưng vì token đang viết trực tiếp trong code,
+# bạn KHÔNG nên public nguyên bản này lên GitHub.
+# Trước khi public, hãy chuyển TOKEN sang st.secrets hoặc biến môi trường.
